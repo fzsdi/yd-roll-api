@@ -10,9 +10,7 @@ var app = builder.Build();
 app.UseCors(b => b .AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
 
 const string notValid = "Unauthenticated";
-const string successful = "Authenticated";
 const string empty = "Empty";
-const string token = "token";
 
 // app.Use((context, next) =>
 // {
@@ -26,7 +24,7 @@ Dictionary<int, string> user = new Dictionary<int, string>();
 user.Add(100, "123");
 var currentToken = "";
 
-bool checkToken(HttpRequest request)
+bool CheckToken(HttpRequest request)
 {
     var authHeader = request.Headers["Authorization"];
     return authHeader == currentToken;
@@ -36,7 +34,7 @@ app.MapPost("/login", async context =>
 {
     var ctx = context;
     var req = context.Request;
-    var body = "???";
+    var body = "";
     using (var reader = new StreamReader(req.Body, Encoding.UTF8)) { body = await reader.ReadToEndAsync(); }
     var loginInfo = JsonSerializer.Deserialize<LoginInfo>(body);
     if (loginInfo != null)
@@ -48,10 +46,9 @@ app.MapPost("/login", async context =>
         }
         else
         {
-            var _token = "faezestokenwithid" + loginInfo.username;
-            var bytes = Encoding.UTF8.GetBytes(_token);
-            currentToken = _token;
-            // ctx.Response.Headers[token] = _token;
+            var userToken = "faezestokenwithid" + loginInfo.username;
+            var bytes = Encoding.UTF8.GetBytes(userToken);
+            currentToken = userToken;
             ctx.Response.StatusCode = 200;
             await ctx.Response.Body.WriteAsync(bytes, 0, bytes.Length);
         }
@@ -72,7 +69,7 @@ app.MapGet("/persons", () => repo.GetAll());
 
 app.MapPost("/persons", (Person person, HttpRequest request) =>
 {
-    if (!checkToken(request))
+    if (!CheckToken(request))
     {
         return Results.Unauthorized();
     }
@@ -92,7 +89,7 @@ app.MapGet("/persons/{id}", (int id) =>
 
 app.MapPut("/persons/{id}", (int id, Person person, HttpRequest request) =>
 {
-    if (!checkToken(request))
+    if (!CheckToken(request))
     {
         return Results.Unauthorized();
     }
@@ -106,7 +103,7 @@ app.MapPut("/persons/{id}", (int id, Person person, HttpRequest request) =>
 
 app.MapDelete("/persons/{id}", (int id, HttpRequest request) =>
 {
-    if (!checkToken(request))
+    if (!CheckToken(request))
     {
         return Results.Unauthorized();
     }
