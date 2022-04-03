@@ -24,6 +24,13 @@ const string token = "token";
 
 Dictionary<int, string> user = new Dictionary<int, string>();
 user.Add(100, "123");
+var currentToken = "";
+
+bool checkToken(HttpRequest request)
+{
+    var authHeader = request.Headers["Authorization"];
+    return authHeader == currentToken;
+}
 
 app.MapPost("/login", async context =>
 {
@@ -43,7 +50,8 @@ app.MapPost("/login", async context =>
         {
             var _token = "faezestokenwithid" + loginInfo.username;
             var bytes = Encoding.UTF8.GetBytes(_token);
-            ctx.Response.Headers[token] = _token;
+            currentToken = _token;
+            // ctx.Response.Headers[token] = _token;
             ctx.Response.StatusCode = 200;
             await ctx.Response.Body.WriteAsync(bytes, 0, bytes.Length);
         }
@@ -62,15 +70,17 @@ bool IsValid(LoginInfo loginInfo, int userId)
 
 app.MapGet("/persons", () => repo.GetAll());
 
-app.MapPost("/persons", (Person person) =>
+app.MapPost("/persons", (Person person, HttpRequest request) =>
 {
+    if (!checkToken(request))
+    {
+        return Results.Unauthorized();
+    }
     if (repo.GetById(person.Id) != null)
     {
         return Results.Conflict();
     }
-
     repo.Add(person);
-    
     return Results.Created($"/Persons/{person.Id}", person);
 });
 
@@ -80,24 +90,30 @@ app.MapGet("/persons/{id}", (int id) =>
     return person == null ? Results.NotFound() : Results.Ok(person);
 });
 
-app.MapPut("/persons/{id}", (int id, Person person) =>
+app.MapPut("/persons/{id}", (int id, Person person, HttpRequest request) =>
 {
+    if (!checkToken(request))
+    {
+        return Results.Unauthorized();
+    }
     if (repo.GetById(id) == null)
     {
         return Results.NotFound();
     }
-
     repo.Update(person);
     return Results.Ok(person);
 });
 
-app.MapDelete("/persons/{id}", (int id) =>
+app.MapDelete("/persons/{id}", (int id, HttpRequest request) =>
 {
+    if (!checkToken(request))
+    {
+        return Results.Unauthorized();
+    }
     if (repo.GetById(id) == null)
     {
         return Results.NotFound();
     }
-
     repo.Delete(id);
     return Results.NoContent();
 });
