@@ -1,5 +1,17 @@
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
+
+const string cs = "Data Source=C:\\Practice\\RollCall\\RollCallAPI\\identifier.sqlite";
+const string sqlVersion = "SELECT SQLITE_VERSION()";
+using var con = new SqliteConnection(cs);
+con.Open();
+using var cmd = new SqliteCommand(sqlVersion, con);
+var version = cmd.ExecuteScalar()?.ToString(); /* There are queries which return only a scalar value.
+                                                    In our case, we want a simple string specifying the version of the database.
+                                                    The ExecuteScalar is used in such situations.
+                                                    We avoid the overhead of using more complex objects. */
+Console.WriteLine($"SQLite version: {version}");
 
 var builder = WebApplication.CreateBuilder(args);
 var repo = new PersonRepository();
@@ -32,6 +44,19 @@ bool CheckToken(HttpRequest request)
 
 app.MapPost("/login", async context =>
 {
+    InitializeUser();
+    const string sqlSelectUser = "SELECT username, password, token FROM users;";
+    var cmdSelectUser = new SqliteCommand(sqlSelectUser, con);
+    SqliteDataReader sqliteDataReader;
+    String output = "";
+    sqliteDataReader = cmdSelectUser.ExecuteReader();
+    while (sqliteDataReader.Read())
+    {
+        output = output + sqliteDataReader.GetValue(0) + " - " + sqliteDataReader.GetValue(1) + " - " +
+                 sqliteDataReader.GetValue(2);
+    }
+    Console.WriteLine("================================");
+    Console.WriteLine(output);
     var ctx = context;
     var req = context.Request;
     var body = "";
@@ -59,6 +84,27 @@ app.MapPost("/login", async context =>
         await ctx.Response.WriteAsync(empty);
     }
 });
+
+void InitializeUser()
+{
+    const int username = 100;
+    const string password = "123";
+    const int isAllowed = 1;
+    var token = "faezestokenwithid" + username;
+    const int firstLogin = 0;
+
+    const string sqlInsertUser =
+        "INSERT INTO users (username, password, isAllowed, token, firstLogin) VALUES (@username, @password, @isAllowed, @token, @firstLogin);";
+    var cmdInsertUser = new SqliteCommand(sqlInsertUser, con);
+    cmdInsertUser.Parameters.AddWithValue("@username", username);
+    cmdInsertUser.Parameters.AddWithValue("@password", password);
+    cmdInsertUser.Parameters.AddWithValue("@isAllowed", isAllowed);
+    cmdInsertUser.Parameters.AddWithValue("@token", token);
+    cmdInsertUser.Parameters.AddWithValue("@firstLogin", firstLogin);
+    cmdInsertUser.Prepare();
+
+    cmdInsertUser.ExecuteNonQuery();
+}
 
 bool IsValid(LoginInfo loginInfo, int userId)
 {
@@ -155,3 +201,12 @@ public class LoginInfo
     public int username { get; set; }
     public string? password { get; set; }
 }
+
+// public class Users
+// {
+//     public int username { get; set; }
+//     public string password { get; set; }
+//     public int isAllowed { get; set; }
+//     public string token { get; set; }
+//     public int firstLogin { get; set; }
+// }
