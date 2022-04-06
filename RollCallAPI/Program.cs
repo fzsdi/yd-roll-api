@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -55,8 +56,7 @@ app.MapPost("/login", async context =>
         output = output + sqliteDataReader.GetValue(0) + " - " + sqliteDataReader.GetValue(1) + " - " +
                  sqliteDataReader.GetValue(2);
     }
-    Console.WriteLine("================================");
-    Console.WriteLine(output);
+    // Console.WriteLine(output);
     var ctx = context;
     var req = context.Request;
     var body = "";
@@ -88,7 +88,8 @@ app.MapPost("/login", async context =>
 void InitializeUser()
 {
     const int username = 100;
-    const string password = "123";
+    const string password = "FaezesPassword";
+    var s = SecurePassword(password);
     const int isAllowed = 1;
     var token = "faezestokenwithid" + username;
     const int firstLogin = 0;
@@ -104,6 +105,46 @@ void InitializeUser()
     cmdInsertUser.Prepare();
 
     cmdInsertUser.ExecuteNonQuery();
+}
+
+string SecurePassword(string password) 
+{
+    // Generate salt with csprng, RNGCryptoServiceProvider() is obsolete therefore I used RandomNumberGenerator.Create method
+    var saltSize = password.Length; // TODO get the real length
+    
+    var ranSalt = GenerateSaltUsingRandom(saltSize);
+    // var ranNumGenSalt = GenerateSaltUsingRanNumGen(saltSize); Either this or that
+    var passSaltAdded = password + ranSalt;
+    return ranSalt;
+}
+
+string GenerateSaltUsingRanNumGen(int saltSize) // TODO fix: lengths (pass and salt) do not match
+{
+    var random = new byte[saltSize];
+    var rndGen = RandomNumberGenerator.Create();
+    rndGen.GetBytes(random);
+    var randomSalt = Convert.ToBase64String(random);
+    return randomSalt;
+}
+
+string GenerateSaltUsingRandom(int saltSize)
+{
+    const string alphanumeric = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const string specialCharacters = "!@#$%^&*~";
+    
+    var ran = new Random();
+    var random = "";
+    for (var i = 0; i <= saltSize-3; i++)
+    {
+        var fSalt = ran.Next(alphanumeric.Length);
+        random += alphanumeric.ElementAt(fSalt);
+    }
+    for (var j = 0; j < 2; j++)
+    {
+        var sSalt = ran.Next(specialCharacters.Length);
+        random += specialCharacters.ElementAt(sSalt);
+    }
+    return random;
 }
 
 bool IsValid(LoginInfo loginInfo, int userId)
