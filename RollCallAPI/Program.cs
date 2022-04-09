@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Cryptography.KeyDerivation;
 using Microsoft.Data.Sqlite;
 
 const string cs = "Data Source=C:\\Practice\\RollCall\\RollCallAPI\\identifier.sqlite";
@@ -13,6 +14,7 @@ var version = cmd.ExecuteScalar()?.ToString(); /* There are queries which return
                                                     The ExecuteScalar is used in such situations.
                                                     We avoid the overhead of using more complex objects. */
 Console.WriteLine($"SQLite version: {version}");
+con.Close();
 
 var builder = WebApplication.CreateBuilder(args);
 var repo = new PersonRepository();
@@ -33,8 +35,7 @@ const string empty = "Empty";
 //     return next();
 // });
 
-Dictionary<int, string> user = new Dictionary<int, string>();
-user.Add(100, "123");
+InitializeUser();
 var currentToken = "";
 
 bool CheckToken(HttpRequest request)
@@ -45,26 +46,38 @@ bool CheckToken(HttpRequest request)
 
 app.MapPost("/login", async context =>
 {
-    InitializeUser();
-    const string sqlSelectUser = "SELECT username, password, token FROM users;";
-    var cmdSelectUser = new SqliteCommand(sqlSelectUser, con);
     SqliteDataReader sqliteDataReader;
-    String output = "";
-    sqliteDataReader = cmdSelectUser.ExecuteReader();
-    while (sqliteDataReader.Read())
-    {
-        output = output + sqliteDataReader.GetValue(0) + " - " + sqliteDataReader.GetValue(1) + " - " +
-                 sqliteDataReader.GetValue(2);
-    }
-    // Console.WriteLine(output);
+    using var conn = new SqliteConnection(cs);
+    conn.Open();
+    var userId = 0;
+    var userPass = "";
+    var userSalt = new byte[] { };
+    
     var ctx = context;
     var req = context.Request;
     var body = "";
     using (var reader = new StreamReader(req.Body, Encoding.UTF8)) { body = await reader.ReadToEndAsync(); }
     var loginInfo = JsonSerializer.Deserialize<LoginInfo>(body);
+    
+    const string sqlSelectUser = "SELECT username, password, salt FROM users where username=@username;";
+    var cmdSelectUser = new SqliteCommand(sqlSelectUser, conn);
+    cmdSelectUser.Parameters.AddWithValue("@username", loginInfo.username);
+    
+    var output = "";
+    sqliteDataReader = cmdSelectUser.ExecuteReader();
+    while (sqliteDataReader.Read())
+    {
+        userId = int.Parse(sqliteDataReader.GetValue(0).ToString());
+        userPass = sqliteDataReader.GetValue(1).ToString();
+        // var userSaltStr = sqliteDataReader.GetValue(2).ToString();
+        userSalt = (byte[]) sqliteDataReader.GetValue(2);
+        output = output + sqliteDataReader.GetValue(0) + " - " + sqliteDataReader.GetValue(1) + " - " +
+                 sqliteDataReader.GetValue(2);
+    }
+    conn.Close();
     if (loginInfo != null)
     {
-        if (!IsValid(loginInfo, 100))
+        if (!IsValid(loginInfo, userId, userPass, userSalt))
         {
             ctx.Response.StatusCode = 401;
             await ctx.Response.WriteAsync(notValid);
@@ -87,44 +100,63 @@ app.MapPost("/login", async context =>
 
 void InitializeUser()
 {
+    using var conn = new SqliteConnection(cs);
+    conn.Open();
     const int username = 100;
-    const string password = "FaezesPassword";
-    var s = SecurePassword(password);
+    const string password = "1234";
+    var (hashedPass, salt) = SecurePassword(password, null);
     const int isAllowed = 1;
     var token = "faezestokenwithid" + username;
     const int firstLogin = 0;
-
+    
     const string sqlInsertUser =
-        "INSERT INTO users (username, password, isAllowed, token, firstLogin) VALUES (@username, @password, @isAllowed, @token, @firstLogin);";
-    var cmdInsertUser = new SqliteCommand(sqlInsertUser, con);
+        "INSERT INTO users (username, password, isAllowed, token, firstLogin, salt) VALUES (@username, @password, @isAllowed, @token, @firstLogin, @salt);";
+    
+    var cmdInsertUser = new SqliteCommand(sqlInsertUser, conn);
+    
     cmdInsertUser.Parameters.AddWithValue("@username", username);
-    cmdInsertUser.Parameters.AddWithValue("@password", password);
+    cmdInsertUser.Parameters.AddWithValue("@password", hashedPass);
     cmdInsertUser.Parameters.AddWithValue("@isAllowed", isAllowed);
     cmdInsertUser.Parameters.AddWithValue("@token", token);
     cmdInsertUser.Parameters.AddWithValue("@firstLogin", firstLogin);
-    cmdInsertUser.Prepare();
-
-    cmdInsertUser.ExecuteNonQuery();
-}
-
-string SecurePassword(string password) 
-{
-    // Generate salt with csprng, RNGCryptoServiceProvider() is obsolete therefore I used RandomNumberGenerator.Create method
-    var saltSize = password.Length; // TODO get the real length
+    cmdInsertUser.Parameters.AddWithValue("@salt", salt);
     
-    var ranSalt = GenerateSaltUsingRandom(saltSize);
-    // var ranNumGenSalt = GenerateSaltUsingRanNumGen(saltSize); Either this or that
-    var passSaltAdded = password + ranSalt;
-    return ranSalt;
+    cmdInsertUser.Prepare();
+    cmdInsertUser.ExecuteNonQuery();
+    conn.Close();
 }
 
-string GenerateSaltUsingRanNumGen(int saltSize) // TODO fix: lengths (pass and salt) do not match
+Tuple<string, byte[]> SecurePassword(string password, byte[]? salt)
+{
+    byte[] ranNumGenSalt;
+    if (salt != null)
+    {
+        ranNumGenSalt = salt;
+    }
+    else
+    {
+        // Generate salt with csprng, RNGCryptoServiceProvider() is obsolete therefore I used RandomNumberGenerator.Create method
+        var saltSize = password.Length; // TODO get the real length
+        // var ranSalt = GenerateSaltUsingRandom(saltSize);
+        ranNumGenSalt = GenerateSaltUsingRanNumGen(saltSize); // Either this or that
+    }
+    var hashed = Convert.ToBase64String(KeyDerivation.Pbkdf2(
+        password,
+        ranNumGenSalt,
+        KeyDerivationPrf.HMACSHA256,
+        100000,
+        256 / 8));
+    
+    return Tuple.Create(hashed, ranNumGenSalt);
+}
+
+byte[] GenerateSaltUsingRanNumGen(int saltSize) // TODO fix: lengths (pass and salt) do not match
 {
     var random = new byte[saltSize];
     var rndGen = RandomNumberGenerator.Create();
     rndGen.GetBytes(random);
-    var randomSalt = Convert.ToBase64String(random);
-    return randomSalt;
+    // var randomSalt = Convert.ToBase64String(random);
+    return random;
 }
 
 string GenerateSaltUsingRandom(int saltSize)
@@ -147,9 +179,16 @@ string GenerateSaltUsingRandom(int saltSize)
     return random;
 }
 
-bool IsValid(LoginInfo loginInfo, int userId)
+bool IsValid(LoginInfo loginInfo, int userId, string userPass, byte[] userSalt)
 {
-    return loginInfo.username == userId && loginInfo.password == user[userId];
+    var (hashedPass, salt) = SecurePassword(loginInfo.password, userSalt);
+    Console.WriteLine("=====HASHED PASS FROM METHOD=====");
+    Console.WriteLine(hashedPass);
+    Console.WriteLine("=====HASHED PASS FROM DB=====");
+    Console.WriteLine(userPass);
+    // Console.WriteLine(Convert.ToBase64String(userSalt));
+    // Console.WriteLine(Convert.ToBase64String(salt));
+    return loginInfo.username == userId && hashedPass == userPass;
 }
 
 app.MapGet("/persons", () => repo.GetAll());
@@ -242,12 +281,3 @@ public class LoginInfo
     public int username { get; set; }
     public string? password { get; set; }
 }
-
-// public class Users
-// {
-//     public int username { get; set; }
-//     public string password { get; set; }
-//     public int isAllowed { get; set; }
-//     public string token { get; set; }
-//     public int firstLogin { get; set; }
-// }
