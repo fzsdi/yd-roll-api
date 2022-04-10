@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -5,19 +6,8 @@ using Microsoft.AspNetCore.Cryptography.KeyDerivation;
 using Microsoft.Data.Sqlite;
 
 const string cs = "Data Source=C:\\Practice\\RollCall\\RollCallAPI\\identifier.sqlite";
-const string sqlVersion = "SELECT SQLITE_VERSION()";
-using var con = new SqliteConnection(cs);
-con.Open();
-using var cmd = new SqliteCommand(sqlVersion, con);
-var version = cmd.ExecuteScalar()?.ToString(); /* There are queries which return only a scalar value.
-                                                    In our case, we want a simple string specifying the version of the database.
-                                                    The ExecuteScalar is used in such situations.
-                                                    We avoid the overhead of using more complex objects. */
-Console.WriteLine($"SQLite version: {version}");
-con.Close();
 
 var builder = WebApplication.CreateBuilder(args);
-var repo = new PersonRepository();
 builder.Services.AddCors();
 
 var app = builder.Build();
@@ -46,8 +36,7 @@ bool CheckToken(HttpRequest request)
 
 app.MapPost("/login", async context =>
 {
-    SqliteDataReader sqliteDataReader;
-    using var conn = new SqliteConnection(cs);
+    await using var conn = new SqliteConnection(cs);
     conn.Open();
     var userId = 0;
     var userPass = "";
@@ -55,36 +44,32 @@ app.MapPost("/login", async context =>
     
     var ctx = context;
     var req = context.Request;
-    var body = "";
+    string body;
     using (var reader = new StreamReader(req.Body, Encoding.UTF8)) { body = await reader.ReadToEndAsync(); }
     var loginInfo = JsonSerializer.Deserialize<LoginInfo>(body);
     
     const string sqlSelectUser = "SELECT username, password, salt FROM users where username=@username;";
     var cmdSelectUser = new SqliteCommand(sqlSelectUser, conn);
-    cmdSelectUser.Parameters.AddWithValue("@username", loginInfo.username);
+    cmdSelectUser.Parameters.AddWithValue("@username", loginInfo?.username);
     
-    var output = "";
-    sqliteDataReader = cmdSelectUser.ExecuteReader();
+    var sqliteDataReader = cmdSelectUser.ExecuteReader();
     while (sqliteDataReader.Read())
     {
-        userId = int.Parse(sqliteDataReader.GetValue(0).ToString());
+        userId = int.Parse(sqliteDataReader.GetValue(0).ToString()!);
         userPass = sqliteDataReader.GetValue(1).ToString();
-        // var userSaltStr = sqliteDataReader.GetValue(2).ToString();
         userSalt = (byte[]) sqliteDataReader.GetValue(2);
-        output = output + sqliteDataReader.GetValue(0) + " - " + sqliteDataReader.GetValue(1) + " - " +
-                 sqliteDataReader.GetValue(2);
     }
     conn.Close();
     if (loginInfo != null)
     {
-        if (!IsValid(loginInfo, userId, userPass, userSalt))
+        if (!IsValid(loginInfo, userId, userPass!, userSalt))
         {
             ctx.Response.StatusCode = 401;
             await ctx.Response.WriteAsync(notValid);
         }
         else
         {
-            var userToken = "faezestokenwithid" + loginInfo.username;
+            var userToken = GetUserToken(userId);
             var bytes = Encoding.UTF8.GetBytes(userToken);
             currentToken = userToken;
             ctx.Response.StatusCode = 200;
@@ -98,16 +83,46 @@ app.MapPost("/login", async context =>
     }
 });
 
+string GetUserToken(int username)
+{
+    string token = "";
+    using var conn = new SqliteConnection(cs);
+    conn.Open();
+    const string sqlSelectUserToken = "SELECT token FROM users WHERE username=@username";
+    var cmdSelectUserToken = new SqliteCommand(sqlSelectUserToken, conn);
+    cmdSelectUserToken.Parameters.AddWithValue("@username", username);
+    var sqliteDataReaderUser = cmdSelectUserToken.ExecuteReader();
+    while (sqliteDataReaderUser.Read())
+    {
+        token = sqliteDataReaderUser.GetValue(0).ToString()!;
+    }
+    return token;
+}
+
 void InitializeUser()
 {
+    var userNameSql = 0;
     using var conn = new SqliteConnection(cs);
     conn.Open();
     const int username = 100;
     const string password = "1234";
-    var (hashedPass, salt) = SecurePassword(password, null);
+    var (hashedPass, salt) = SecurePassword(password);
     const int isAllowed = 1;
     var token = "faezestokenwithid" + username;
     const int firstLogin = 0;
+
+    const string sqlSelectUser = "SELECT username FROM users WHERE username=@username";
+    var cmdSelectUser = new SqliteCommand(sqlSelectUser, conn);
+    cmdSelectUser.Parameters.AddWithValue("@username", username);
+    var sqliteDataReaderUser = cmdSelectUser.ExecuteReader();
+    while (sqliteDataReaderUser.Read())
+    {
+        userNameSql = int.Parse(sqliteDataReaderUser.GetValue(0).ToString()!);
+    }
+    if (userNameSql != 0)
+    {
+        return;
+    }
     
     const string sqlInsertUser =
         "INSERT INTO users (username, password, isAllowed, token, firstLogin, salt) VALUES (@username, @password, @isAllowed, @token, @firstLogin, @salt);";
@@ -126,7 +141,7 @@ void InitializeUser()
     conn.Close();
 }
 
-Tuple<string, byte[]> SecurePassword(string password, byte[]? salt)
+Tuple<string, byte[]> SecurePassword(string password, [Optional] byte[]? salt)
 {
     byte[] ranNumGenSalt;
     if (salt != null)
@@ -181,17 +196,42 @@ string GenerateSaltUsingRandom(int saltSize)
 
 bool IsValid(LoginInfo loginInfo, int userId, string userPass, byte[] userSalt)
 {
-    var (hashedPass, salt) = SecurePassword(loginInfo.password, userSalt);
-    Console.WriteLine("=====HASHED PASS FROM METHOD=====");
-    Console.WriteLine(hashedPass);
-    Console.WriteLine("=====HASHED PASS FROM DB=====");
-    Console.WriteLine(userPass);
-    // Console.WriteLine(Convert.ToBase64String(userSalt));
-    // Console.WriteLine(Convert.ToBase64String(salt));
+    var (hashedPass, _) = SecurePassword(loginInfo.password!, userSalt);
     return loginInfo.username == userId && hashedPass == userPass;
 }
 
-app.MapGet("/persons", () => repo.GetAll());
+bool DoesExist(int targetedId, SqliteConnection conn)
+{
+    var personId = 0;
+    const string sqlSelectPerson = "SELECT personId FROM persons WHERE personId=@personId;";
+    var cmdSelectPerson = new SqliteCommand(sqlSelectPerson, conn);
+    cmdSelectPerson.Parameters.AddWithValue("@personId", targetedId);
+    var sqliteDataReaderPerson = cmdSelectPerson.ExecuteReader();
+    while (sqliteDataReaderPerson.Read())
+    {
+        personId = int.Parse(sqliteDataReaderPerson.GetValue(0).ToString()!);
+    }
+    return personId != 0;
+}
+
+app.MapGet("/persons", () =>
+{
+    var personsList = new List<Person>();
+    using var conn = new SqliteConnection(cs);
+    conn.Open();
+    const string sqlSelectPersons = "SELECT personId, fullName, isPresent FROM persons;";
+    var cmdSelectPersons = new SqliteCommand(sqlSelectPersons, conn);
+    var sqliteDataReaderPersons = cmdSelectPersons.ExecuteReader();
+    while (sqliteDataReaderPersons.Read())
+    {
+        var id = int.Parse(sqliteDataReaderPersons.GetValue(0).ToString()!);
+        var fullName = sqliteDataReaderPersons.GetValue(1).ToString();
+        var isPresent = sqliteDataReaderPersons.GetValue(2).ToString() == "1";
+        personsList.Add(new Person(id, fullName!, isPresent));
+    }
+    conn.Close();
+    return personsList;
+});
 
 app.MapPost("/persons", (Person person, HttpRequest request) =>
 {
@@ -199,45 +239,98 @@ app.MapPost("/persons", (Person person, HttpRequest request) =>
     {
         return Results.Unauthorized();
     }
-    if (repo.GetById(person.Id) != null)
+    using var conn = new SqliteConnection(cs);
+    conn.Open();
+    if (DoesExist(person.Id, conn))
     {
         return Results.Conflict();
     }
-    repo.Add(person);
+    var isPresent = person.IsPresent ? 1 : 0;
+    const string sqlInsertPerson = "INSERT INTO persons (personId, fullName, isPresent, positionId) VALUES (@personId, @fullName, @isPresent, @positionId)";
+    var cmdInsertPerson = new SqliteCommand(sqlInsertPerson, conn);
+    cmdInsertPerson.Parameters.AddWithValue("@personId", person.Id);
+    cmdInsertPerson.Parameters.AddWithValue("@fullName", person.FullName);
+    cmdInsertPerson.Parameters.AddWithValue("@isPresent", isPresent);
+    cmdInsertPerson.Parameters.AddWithValue("@positionId", 0);
+    
+    cmdInsertPerson.Prepare();
+    cmdInsertPerson.ExecuteNonQuery();
+    conn.Close();
     return Results.Created($"/Persons/{person.Id}", person);
 });
 
 app.MapGet("/persons/{id}", (int id) =>
 {
-    var person = repo.GetById(id);
-    return person == null ? Results.NotFound() : Results.Ok(person);
+    using var conn = new SqliteConnection(cs);
+    conn.Open();
+    if (!DoesExist(id, conn))
+    {
+        return Results.NotFound();
+    }
+    var person = new Person(0, "", false);
+    const string sqlSelectPerson = "SELECT personId, fullName, isPresent FROM persons WHERE personId=@personId";
+    var cmdSelectPerson = new SqliteCommand(sqlSelectPerson, conn);
+    cmdSelectPerson.Parameters.AddWithValue("@personId", id);
+    var sqliteDataReaderPerson = cmdSelectPerson.ExecuteReader();
+    while (sqliteDataReaderPerson.Read())
+    {
+        var personId = int.Parse(sqliteDataReaderPerson.GetValue(0).ToString()!);
+        var fullName = sqliteDataReaderPerson.GetValue(1).ToString();
+        var isPresent = sqliteDataReaderPerson.GetValue(2).ToString() == "1";
+        person.Id = personId;
+        person.FullName = fullName!;
+        person.IsPresent = isPresent;
+    }
+    
+    return Results.Ok(person);
 });
 
 app.MapPut("/persons/{id}", (int id, Person person, HttpRequest request) =>
 {
+    using var conn = new SqliteConnection(cs);
+    conn.Open();
     if (!CheckToken(request))
     {
         return Results.Unauthorized();
     }
-    if (repo.GetById(id) == null)
+    if (!DoesExist(id, conn))
     {
         return Results.NotFound();
     }
-    repo.Update(person);
+    var isPresent = person.IsPresent ? 1 : 0;
+    const string sqlUpdatePerson =
+        "UPDATE persons SET isPresent=@isPresent WHERE personId=@personId";
+    var cmdUpdatePerson = new SqliteCommand(sqlUpdatePerson, conn);
+    cmdUpdatePerson.Parameters.AddWithValue("@isPresent", isPresent);
+    cmdUpdatePerson.Parameters.AddWithValue("@personId", id);
+    
+    cmdUpdatePerson.Prepare();
+    cmdUpdatePerson.ExecuteNonQuery();
+    conn.Close();
+    
     return Results.Ok(person);
 });
 
 app.MapDelete("/persons/{id}", (int id, HttpRequest request) =>
 {
+    using var conn = new SqliteConnection(cs);
+    conn.Open();
     if (!CheckToken(request))
     {
         return Results.Unauthorized();
     }
-    if (repo.GetById(id) == null)
+    if (!DoesExist(id, conn))
     {
         return Results.NotFound();
     }
-    repo.Delete(id);
+    const string sqlDeletePerson = "DELETE FROM persons WHERE personId=@personId";
+    var cmdDeletePerson = new SqliteCommand(sqlDeletePerson, conn);
+    cmdDeletePerson.Parameters.AddWithValue("@personId", id);
+    
+    cmdDeletePerson.Prepare();
+    cmdDeletePerson.ExecuteNonQuery();
+    conn.Close();
+    
     return Results.NoContent();
 });
 
@@ -257,23 +350,6 @@ class Person
         FullName = fullName;
         IsPresent = isPresent;
     }
-}
-
-class PersonRepository
-{
-    private readonly Dictionary<int, Person> _persons = new()
-    {
-        {1, new Person(1, "Faeze", true)},
-        {2, new Person(2, "Sara", false)},
-        {3, new Person(3, "Amir", true)}
-    };
-
-    public IEnumerable<Person> GetAll() => _persons.Values;
-
-    public Person? GetById(int id) => _persons.ContainsKey(id) ? _persons[id] : null;  
-    public void Add(Person person) => _persons.Add(person.Id, person);
-    public void Update(Person person) => _persons[person.Id] = person;
-    public void Delete(int id) => _persons.Remove(id);
 }
 
 public class LoginInfo
