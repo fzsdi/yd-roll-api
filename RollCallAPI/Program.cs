@@ -158,7 +158,7 @@ Tuple<string, byte[]> SecurePassword(string password, [Optional] byte[]? salt)
     var hashed = Convert.ToBase64String(KeyDerivation.Pbkdf2(
         password,
         ranNumGenSalt,
-        KeyDerivationPrf.HMACSHA256,
+        KeyDerivationPrf.HMACSHA1,
         100000,
         256 / 8));
     
