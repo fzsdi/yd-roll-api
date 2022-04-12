@@ -1,9 +1,11 @@
+using System.IdentityModel.Tokens.Jwt;
 using System.Runtime.InteropServices;
+using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Cryptography.KeyDerivation;
-using Microsoft.Data.Sqlite;
+using Microsoft.Data.Sqlite;using Microsoft.IdentityModel.Tokens;
 
 const string cs = "Data Source=C:\\Practice\\RollCall\\RollCallAPI\\identifier.sqlite";
 
@@ -14,8 +16,10 @@ var app = builder.Build();
 
 app.UseCors(b => b .AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
 
-const string notValid = "Unauthenticated";
-const string empty = "Empty";
+const string SECRET_KEY = "eiszcvldytlfygojwfagruuluhftuhsn";
+var SIGNING_KEY = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(SECRET_KEY));
+const string NOT_VALID = "Unauthenticated";
+const string EMPTY = "Empty";
 
 // app.Use((context, next) =>
 // {
@@ -65,11 +69,11 @@ app.MapPost("/login", async context =>
         if (!IsValid(loginInfo, userId, userPass!, userSalt))
         {
             ctx.Response.StatusCode = 401;
-            await ctx.Response.WriteAsync(notValid);
+            await ctx.Response.WriteAsync(NOT_VALID);
         }
         else
         {
-            var userToken = GetUserToken(userId);
+            var userToken = GenerateJwt(userId);
             var bytes = Encoding.UTF8.GetBytes(userToken);
             currentToken = userToken;
             ctx.Response.StatusCode = 200;
@@ -79,24 +83,27 @@ app.MapPost("/login", async context =>
     else
     {
         ctx.Response.StatusCode = 401;
-        await ctx.Response.WriteAsync(empty);
+        await ctx.Response.WriteAsync(EMPTY);
     }
 });
 
-string GetUserToken(int username)
+string GenerateJwt(int userId)
 {
-    string token = "";
-    using var conn = new SqliteConnection(cs);
-    conn.Open();
-    const string sqlSelectUserToken = "SELECT token FROM users WHERE username=@username";
-    var cmdSelectUserToken = new SqliteCommand(sqlSelectUserToken, conn);
-    cmdSelectUserToken.Parameters.AddWithValue("@username", username);
-    var sqliteDataReaderUser = cmdSelectUserToken.ExecuteReader();
-    while (sqliteDataReaderUser.Read())
+    const int expiry = 10080; // 7 days
+    var claims = new List<Claim>
     {
-        token = sqliteDataReaderUser.GetValue(0).ToString()!;
-    }
-    return token;
+        new(JwtRegisteredClaimNames.Sub, userId.ToString()),
+        new(JwtRegisteredClaimNames.Iss, "RollCallApi"),
+        new(JwtRegisteredClaimNames.Aud, "RollCallApplication")
+    };
+    
+    var token = new JwtSecurityToken(
+        claims:    claims,
+        expires:   DateTime.UtcNow.AddMinutes(expiry),
+        signingCredentials: new SigningCredentials(SIGNING_KEY,
+            SecurityAlgorithms.HmacSha256));
+    
+    return new JwtSecurityTokenHandler().WriteToken(token);
 }
 
 void InitializeUser()
@@ -108,7 +115,7 @@ void InitializeUser()
     const string password = "1234";
     var (hashedPass, salt) = SecurePassword(password);
     const int isAllowed = 1;
-    var token = "faezestokenwithid" + username;
+    // var token = "faezestokenwithid" + username;
     const int firstLogin = 0;
 
     const string sqlSelectUser = "SELECT username FROM users WHERE username=@username";
@@ -125,14 +132,14 @@ void InitializeUser()
     }
     
     const string sqlInsertUser =
-        "INSERT INTO users (username, password, isAllowed, token, firstLogin, salt) VALUES (@username, @password, @isAllowed, @token, @firstLogin, @salt);";
+        "INSERT INTO users (username, password, isAllowed, firstLogin, salt) VALUES (@username, @password, @isAllowed, @firstLogin, @salt);";
     
     var cmdInsertUser = new SqliteCommand(sqlInsertUser, conn);
     
     cmdInsertUser.Parameters.AddWithValue("@username", username);
     cmdInsertUser.Parameters.AddWithValue("@password", hashedPass);
     cmdInsertUser.Parameters.AddWithValue("@isAllowed", isAllowed);
-    cmdInsertUser.Parameters.AddWithValue("@token", token);
+    // cmdInsertUser.Parameters.AddWithValue("@token", token);
     cmdInsertUser.Parameters.AddWithValue("@firstLogin", firstLogin);
     cmdInsertUser.Parameters.AddWithValue("@salt", salt);
     
@@ -151,21 +158,21 @@ Tuple<string, byte[]> SecurePassword(string password, [Optional] byte[]? salt)
     else
     {
         // Generate salt with csprng, RNGCryptoServiceProvider() is obsolete therefore I used RandomNumberGenerator.Create method
-        var saltSize = password.Length; // TODO get the real length
+        var saltSize = password.Length;
         // var ranSalt = GenerateSaltUsingRandom(saltSize);
         ranNumGenSalt = GenerateSaltUsingRanNumGen(saltSize); // Either this or that
     }
     var hashed = Convert.ToBase64String(KeyDerivation.Pbkdf2(
         password,
         ranNumGenSalt,
-        KeyDerivationPrf.HMACSHA256,
+        KeyDerivationPrf.HMACSHA1,
         100000,
         256 / 8));
     
     return Tuple.Create(hashed, ranNumGenSalt);
 }
 
-byte[] GenerateSaltUsingRanNumGen(int saltSize) // TODO fix: lengths (pass and salt) do not match
+byte[] GenerateSaltUsingRanNumGen(int saltSize)
 {
     var random = new byte[saltSize];
     var rndGen = RandomNumberGenerator.Create();
