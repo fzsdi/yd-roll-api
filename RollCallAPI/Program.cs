@@ -5,7 +5,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Cryptography.KeyDerivation;
-using Microsoft.Data.Sqlite;using Microsoft.IdentityModel.Tokens;
+using Microsoft.Data.Sqlite;
+using Microsoft.IdentityModel.Tokens;
 
 const string cs = "Data Source=C:\\Practice\\RollCall\\RollCallAPI\\identifier.sqlite";
 
@@ -20,6 +21,8 @@ const string SECRET_KEY = "eiszcvldytlfygojwfagruuluhftuhsn";
 var SIGNING_KEY = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(SECRET_KEY));
 const string NOT_VALID = "Unauthenticated";
 const string EMPTY = "Empty";
+const string ISSUER = "RollCallApi";
+const string AUDIENCE = "RollCallApi";
 
 // app.Use((context, next) =>
 // {
@@ -29,13 +32,33 @@ const string EMPTY = "Empty";
 //     return next();
 // });
 
-InitializeUser();
+InitializeUser(1, "3381");
+InitializeUser(2, "1234");
 var currentToken = "";
 
-bool CheckToken(HttpRequest request)
+bool ValidateToken(HttpRequest request)
 {
-    var authHeader = request.Headers["Authorization"];
-    return authHeader == currentToken;
+    var jwtToken = request.Headers["Authorization"];
+    var tokenHandler = new JwtSecurityTokenHandler();
+    try
+    {
+        var token = request.Headers["Authorization"];
+        tokenHandler.ValidateToken(jwtToken, new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidIssuer = ISSUER,
+            ValidAudience = AUDIENCE,
+            IssuerSigningKey = SIGNING_KEY
+        }, out SecurityToken validatedToken);
+    }
+    catch
+    {
+        return false;
+    }
+
+    return true;
 }
 
 app.MapPost("/login", async context =>
@@ -75,7 +98,7 @@ app.MapPost("/login", async context =>
         {
             var userToken = GenerateJwt(userId);
             var bytes = Encoding.UTF8.GetBytes(userToken);
-            currentToken = userToken;
+            // currentToken = userToken;
             ctx.Response.StatusCode = 200;
             await ctx.Response.Body.WriteAsync(bytes, 0, bytes.Length);
         }
@@ -93,8 +116,8 @@ string GenerateJwt(int userId)
     var claims = new List<Claim>
     {
         new(JwtRegisteredClaimNames.Sub, userId.ToString()),
-        new(JwtRegisteredClaimNames.Iss, "RollCallApi"),
-        new(JwtRegisteredClaimNames.Aud, "RollCallApplication")
+        new(JwtRegisteredClaimNames.Iss, ISSUER),
+        new(JwtRegisteredClaimNames.Aud, AUDIENCE)
     };
     
     var token = new JwtSecurityToken(
@@ -106,16 +129,15 @@ string GenerateJwt(int userId)
     return new JwtSecurityTokenHandler().WriteToken(token);
 }
 
-void InitializeUser()
+void InitializeUser(int username, string password)
 {
     var userNameSql = 0;
     using var conn = new SqliteConnection(cs);
     conn.Open();
-    const int username = 100;
-    const string password = "1234";
+    // const int username = 100;
+    // const string password = "1234";
     var (hashedPass, salt) = SecurePassword(password);
     const int isAllowed = 1;
-    // var token = "faezestokenwithid" + username;
     const int firstLogin = 0;
 
     const string sqlSelectUser = "SELECT username FROM users WHERE username=@username";
@@ -242,7 +264,7 @@ app.MapGet("/persons", () =>
 
 app.MapPost("/persons", (Person person, HttpRequest request) =>
 {
-    if (!CheckToken(request))
+    if (!ValidateToken(request))
     {
         return Results.Unauthorized();
     }
@@ -296,7 +318,7 @@ app.MapPut("/persons/{id}", (int id, Person person, HttpRequest request) =>
 {
     using var conn = new SqliteConnection(cs);
     conn.Open();
-    if (!CheckToken(request))
+    if (!ValidateToken(request))
     {
         return Results.Unauthorized();
     }
@@ -322,7 +344,7 @@ app.MapDelete("/persons/{id}", (int id, HttpRequest request) =>
 {
     using var conn = new SqliteConnection(cs);
     conn.Open();
-    if (!CheckToken(request))
+    if (!ValidateToken(request))
     {
         return Results.Unauthorized();
     }
