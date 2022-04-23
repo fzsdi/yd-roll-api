@@ -17,12 +17,46 @@ var app = builder.Build();
 
 app.UseCors(b => b .AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
 
+var webSocketOptions = new WebSocketOptions
+{
+    KeepAliveInterval = TimeSpan.FromMinutes(2)
+};
+app.UseWebSockets(webSocketOptions);
+
 const string SECRET_KEY = "eiszcvldytlfygojwfagruuluhftuhsn";
 var SIGNING_KEY = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(SECRET_KEY));
 const string NOT_VALID = "Unauthenticated";
 const string EMPTY = "Empty";
 const string ISSUER = "RollCallApi";
 const string AUDIENCE = "RollCallApi";
+
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path == "/channel")
+    {
+        if (context.WebSockets.IsWebSocketRequest)
+        {
+            var token = context.Request.Query["token"][0];
+            if (!ValidateToken(userToken: token))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            }
+            else
+            {
+                // define class, functions based on messages type
+                using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+            }
+        }
+        else
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        }
+    }
+    else
+    {
+        await next(context);
+    }
+});
 
 // app.Use((context, next) =>
 // {
@@ -32,17 +66,16 @@ const string AUDIENCE = "RollCallApi";
 //     return next();
 // });
 
-InitializeUser(1, "3381");
-InitializeUser(2, "1234");
-var currentToken = "";
+InitializeUser(100, "3381");
+InitializeUser(101, "1234");
 
-bool ValidateToken(HttpRequest request)
+bool ValidateToken([Optional] HttpRequest request, [Optional] string userToken)
 {
-    var jwtToken = request.Headers["Authorization"];
+    string jwtToken = request != null ? request.Headers["Authorization"] : userToken;
+
     var tokenHandler = new JwtSecurityTokenHandler();
     try
     {
-        var token = request.Headers["Authorization"];
         tokenHandler.ValidateToken(jwtToken, new TokenValidationParameters
         {
             ValidateIssuerSigningKey = true,
@@ -51,7 +84,7 @@ bool ValidateToken(HttpRequest request)
             ValidIssuer = ISSUER,
             ValidAudience = AUDIENCE,
             IssuerSigningKey = SIGNING_KEY
-        }, out SecurityToken validatedToken);
+        }, out _);
     }
     catch
     {
@@ -98,7 +131,6 @@ app.MapPost("/login", async context =>
         {
             var userToken = GenerateJwt(userId);
             var bytes = Encoding.UTF8.GetBytes(userToken);
-            // currentToken = userToken;
             ctx.Response.StatusCode = 200;
             await ctx.Response.Body.WriteAsync(bytes, 0, bytes.Length);
         }
@@ -112,7 +144,7 @@ app.MapPost("/login", async context =>
 
 string GenerateJwt(int userId)
 {
-    const int expiry = 10080; // 7 days
+    const int expiry = 60 * 24 * 7; // 7 days
     var claims = new List<Claim>
     {
         new(JwtRegisteredClaimNames.Sub, userId.ToString()),
@@ -136,7 +168,7 @@ void InitializeUser(int username, string password)
     conn.Open();
     // const int username = 100;
     // const string password = "1234";
-    var (hashedPass, salt) = SecurePassword(password);
+    var (hashedPass, salt) = SecurePassword(password: password);
     const int isAllowed = 1;
     const int firstLogin = 0;
 
@@ -225,14 +257,14 @@ string GenerateSaltUsingRandom(int saltSize)
 
 bool IsValid(LoginInfo loginInfo, int userId, string userPass, byte[] userSalt)
 {
-    var (hashedPass, _) = SecurePassword(loginInfo.password!, userSalt);
+    var (hashedPass, _) = SecurePassword(password: loginInfo.password!, salt: userSalt);
     return loginInfo.username == userId && hashedPass == userPass;
 }
 
 bool DoesExist(int targetedId, SqliteConnection conn)
 {
     var personId = 0;
-    const string sqlSelectPerson = "SELECT personId FROM persons WHERE personId=@personId;";
+    const string sqlSelectPerson = "SELECT personId FROM persons WHERE personId=@personId AND deletedAt is null;";
     var cmdSelectPerson = new SqliteCommand(sqlSelectPerson, conn);
     cmdSelectPerson.Parameters.AddWithValue("@personId", targetedId);
     var sqliteDataReaderPerson = cmdSelectPerson.ExecuteReader();
@@ -248,7 +280,7 @@ app.MapGet("/persons", () =>
     var personsList = new List<Person>();
     using var conn = new SqliteConnection(cs);
     conn.Open();
-    const string sqlSelectPersons = "SELECT personId, fullName, isPresent FROM persons;";
+    const string sqlSelectPersons = "SELECT personId, fullName, isPresent FROM persons WHERE deletedAt is null;";
     var cmdSelectPersons = new SqliteCommand(sqlSelectPersons, conn);
     var sqliteDataReaderPersons = cmdSelectPersons.ExecuteReader();
     while (sqliteDataReaderPersons.Read())
@@ -264,7 +296,7 @@ app.MapGet("/persons", () =>
 
 app.MapPost("/persons", (Person person, HttpRequest request) =>
 {
-    if (!ValidateToken(request))
+    if (!ValidateToken(request: request))
     {
         return Results.Unauthorized();
     }
@@ -318,7 +350,7 @@ app.MapPut("/persons/{id}", (int id, Person person, HttpRequest request) =>
 {
     using var conn = new SqliteConnection(cs);
     conn.Open();
-    if (!ValidateToken(request))
+    if (!ValidateToken(request: request))
     {
         return Results.Unauthorized();
     }
@@ -328,7 +360,7 @@ app.MapPut("/persons/{id}", (int id, Person person, HttpRequest request) =>
     }
     var isPresent = person.IsPresent ? 1 : 0;
     const string sqlUpdatePerson =
-        "UPDATE persons SET isPresent=@isPresent WHERE personId=@personId";
+        "UPDATE persons SET isPresent=@isPresent WHERE personId=@personId and deletedAt is null";
     var cmdUpdatePerson = new SqliteCommand(sqlUpdatePerson, conn);
     cmdUpdatePerson.Parameters.AddWithValue("@isPresent", isPresent);
     cmdUpdatePerson.Parameters.AddWithValue("@personId", id);
@@ -344,7 +376,7 @@ app.MapDelete("/persons/{id}", (int id, HttpRequest request) =>
 {
     using var conn = new SqliteConnection(cs);
     conn.Open();
-    if (!ValidateToken(request))
+    if (!ValidateToken(request: request))
     {
         return Results.Unauthorized();
     }
@@ -352,9 +384,11 @@ app.MapDelete("/persons/{id}", (int id, HttpRequest request) =>
     {
         return Results.NotFound();
     }
-    const string sqlDeletePerson = "DELETE FROM persons WHERE personId=@personId";
+    var currentTime = DateTime.Now;
+    const string sqlDeletePerson = "UPDATE persons SET deletedAt=@deletedAt WHERE personId=@personId and deletedAt is null";
     var cmdDeletePerson = new SqliteCommand(sqlDeletePerson, conn);
     cmdDeletePerson.Parameters.AddWithValue("@personId", id);
+    cmdDeletePerson.Parameters.AddWithValue("@deletedAt", currentTime);
     
     cmdDeletePerson.Prepare();
     cmdDeletePerson.ExecuteNonQuery();
