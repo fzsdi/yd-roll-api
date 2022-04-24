@@ -23,12 +23,12 @@ var webSocketOptions = new WebSocketOptions
 };
 app.UseWebSockets(webSocketOptions);
 
-const string SECRET_KEY = "eiszcvldytlfygojwfagruuluhftuhsn";
-var SIGNING_KEY = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(SECRET_KEY));
-const string NOT_VALID = "Unauthenticated";
-const string EMPTY = "Empty";
-const string ISSUER = "RollCallApi";
-const string AUDIENCE = "RollCallApi";
+const string secretKey = "eiszcvldytlfygojwfagruuluhftuhsn";
+var signingKey = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(secretKey));
+const string notValid = "Unauthenticated";
+const string empty = "Empty";
+const string issuer = "RollCallApi";
+const string audience = "RollCallApi";
 
 app.Use(async (context, next) =>
 {
@@ -43,7 +43,7 @@ app.Use(async (context, next) =>
             }
             else
             {
-                // define class, functions based on messages type
+                // Define class, functions based on messages type
                 using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
             }
         }
@@ -66,7 +66,7 @@ app.Use(async (context, next) =>
 //     return next();
 // });
 
-InitializeUser(100, "3381");
+InitializeUser(100, "4321");
 InitializeUser(101, "1234");
 
 bool ValidateToken([Optional] HttpRequest request, [Optional] string userToken)
@@ -81,9 +81,9 @@ bool ValidateToken([Optional] HttpRequest request, [Optional] string userToken)
             ValidateIssuerSigningKey = true,
             ValidateIssuer = true,
             ValidateAudience = true,
-            ValidIssuer = ISSUER,
-            ValidAudience = AUDIENCE,
-            IssuerSigningKey = SIGNING_KEY
+            ValidIssuer = issuer,
+            ValidAudience = audience,
+            IssuerSigningKey = signingKey
         }, out _);
     }
     catch
@@ -125,7 +125,7 @@ app.MapPost("/login", async context =>
         if (!IsValid(loginInfo, userId, userPass!, userSalt))
         {
             ctx.Response.StatusCode = 401;
-            await ctx.Response.WriteAsync(NOT_VALID);
+            await ctx.Response.WriteAsync(notValid);
         }
         else
         {
@@ -138,24 +138,25 @@ app.MapPost("/login", async context =>
     else
     {
         ctx.Response.StatusCode = 401;
-        await ctx.Response.WriteAsync(EMPTY);
+        await ctx.Response.WriteAsync(empty);
     }
 });
 
 string GenerateJwt(int userId)
 {
-    const int expiry = 60 * 24 * 7; // 7 days
+    const int expiry = 60 * 24 * 1;
     var claims = new List<Claim>
     {
+        // Add another claim, role
         new(JwtRegisteredClaimNames.Sub, userId.ToString()),
-        new(JwtRegisteredClaimNames.Iss, ISSUER),
-        new(JwtRegisteredClaimNames.Aud, AUDIENCE)
+        new(JwtRegisteredClaimNames.Iss, issuer),
+        new(JwtRegisteredClaimNames.Aud, audience)
     };
     
     var token = new JwtSecurityToken(
         claims:    claims,
         expires:   DateTime.UtcNow.AddMinutes(expiry),
-        signingCredentials: new SigningCredentials(SIGNING_KEY,
+        signingCredentials: new SigningCredentials(signingKey,
             SecurityAlgorithms.HmacSha256));
     
     return new JwtSecurityTokenHandler().WriteToken(token);
@@ -166,8 +167,6 @@ void InitializeUser(int username, string password)
     var userNameSql = 0;
     using var conn = new SqliteConnection(cs);
     conn.Open();
-    // const int username = 100;
-    // const string password = "1234";
     var (hashedPass, salt) = SecurePassword(password: password);
     const int isAllowed = 1;
     const int firstLogin = 0;
@@ -193,7 +192,6 @@ void InitializeUser(int username, string password)
     cmdInsertUser.Parameters.AddWithValue("@username", username);
     cmdInsertUser.Parameters.AddWithValue("@password", hashedPass);
     cmdInsertUser.Parameters.AddWithValue("@isAllowed", isAllowed);
-    // cmdInsertUser.Parameters.AddWithValue("@token", token);
     cmdInsertUser.Parameters.AddWithValue("@firstLogin", firstLogin);
     cmdInsertUser.Parameters.AddWithValue("@salt", salt);
     
@@ -231,7 +229,6 @@ byte[] GenerateSaltUsingRanNumGen(int saltSize)
     var random = new byte[saltSize];
     var rndGen = RandomNumberGenerator.Create();
     rndGen.GetBytes(random);
-    // var randomSalt = Convert.ToBase64String(random);
     return random;
 }
 
