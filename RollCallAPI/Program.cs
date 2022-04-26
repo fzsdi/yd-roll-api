@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.IdentityModel.Tokens.Jwt;
+using System.Net.WebSockets;
 using System.Runtime.InteropServices;
 using System.Security.Claims;
 using System.Security.Cryptography;
@@ -17,11 +19,7 @@ var app = builder.Build();
 
 app.UseCors(b => b .AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
 
-var webSocketOptions = new WebSocketOptions
-{
-    KeepAliveInterval = TimeSpan.FromMinutes(2)
-};
-app.UseWebSockets(webSocketOptions);
+app.UseWebSockets();
 
 const string secretKey = "eiszcvldytlfygojwfagruuluhftuhsn";
 var signingKey = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(secretKey));
@@ -30,6 +28,11 @@ const string empty = "Empty";
 const string issuer = "RollCallApi";
 const string audience = "RollCallApi";
 
+WebSocket webSocket = null;
+
+ConcurrentDictionary<string, WebSocket> clients = new ConcurrentDictionary<string, WebSocket>();
+
+// The context gives us the info about the request pipeline's context
 app.Use(async (context, next) =>
 {
     if (context.Request.Path == "/channel")
@@ -43,8 +46,22 @@ app.Use(async (context, next) =>
             }
             else
             {
-                // Define class, functions based on messages type
-                using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
+                webSocket = await context.WebSockets.AcceptWebSocketAsync();
+                
+                var connId = AddClient(webSocket);
+                
+                await ReceiveMessage(webSocket, async (result, buffer) =>
+                {
+                    switch (result.MessageType)
+                    {
+                        case WebSocketMessageType.Text:
+                            Console.WriteLine($"Message received: {Encoding.UTF8.GetString(buffer, 0, result.Count)}");
+                            return;
+                        case WebSocketMessageType.Close:
+                            Console.WriteLine("Received closed message.");
+                            return;
+                    }
+                });
             }
         }
         else
@@ -57,6 +74,43 @@ app.Use(async (context, next) =>
         await next(context);
     }
 });
+
+// async Task SendConId(WebSocket socket, string connId)
+// {
+//     var buffer = Encoding.UTF8.GetBytes("ConnId: " + connId);
+//     await socket.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+// }
+//
+// async Task SendAction(WebSocket socket, string action)
+// {
+//     var buffer = Encoding.UTF8.GetBytes("Action: " + action);
+//     await socket.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+// }
+
+async Task ReceiveMessage(WebSocket socket, Action<WebSocketReceiveResult, byte[]> handleMessage)
+{
+    var buffer = new byte[1024 * 4];
+    while (socket.State == WebSocketState.Open)
+    {
+        var result = await socket.ReceiveAsync(buffer: new ArraySegment<byte>(buffer),
+            cancellationToken: CancellationToken.None);
+
+        handleMessage(result, buffer);
+    }
+}
+
+ConcurrentDictionary<string, WebSocket> GetAllClients()
+{
+    return clients;
+}
+
+string AddClient(WebSocket socket)
+{
+    string connId = Guid.NewGuid().ToString(); // Generate a unique identifier
+    clients.TryAdd(connId, socket);
+    Console.WriteLine("Connection added: " + connId);
+    return connId;
+}
 
 // app.Use((context, next) =>
 // {
@@ -343,9 +397,9 @@ app.MapGet("/persons/{id}", (int id) =>
     return Results.Ok(person);
 });
 
-app.MapPut("/persons/{id}", (int id, Person person, HttpRequest request) =>
+app.MapPut("/persons/{id}", async (int id, Person person, HttpRequest request) =>
 {
-    using var conn = new SqliteConnection(cs);
+    await using var conn = new SqliteConnection(cs);
     conn.Open();
     if (!ValidateToken(request: request))
     {
@@ -366,6 +420,14 @@ app.MapPut("/persons/{id}", (int id, Person person, HttpRequest request) =>
     cmdUpdatePerson.ExecuteNonQuery();
     conn.Close();
     
+    var buffer = Encoding.UTF8.GetBytes("Refresh");
+    foreach (var client in GetAllClients())
+    {
+        if (webSocket!.State == WebSocketState.Open)
+        {
+            await client.Value.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+        }
+    }
     return Results.Ok(person);
 });
 
