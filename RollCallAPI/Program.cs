@@ -173,7 +173,6 @@ app.MapPost("/login", async context =>
         userPass = sqliteDataReader.GetValue(1).ToString();
         userSalt = (byte[]) sqliteDataReader.GetValue(2);
     }
-    conn.Close();
     if (loginInfo != null)
     {
         if (!IsValid(loginInfo, userId, userPass!, userSalt))
@@ -183,7 +182,7 @@ app.MapPost("/login", async context =>
         }
         else
         {
-            var userToken = GenerateJwt(userId);
+            var userToken = GenerateJwt(userId, conn);
             var bytes = Encoding.UTF8.GetBytes(userToken);
             ctx.Response.StatusCode = 200;
             await ctx.Response.Body.WriteAsync(bytes, 0, bytes.Length);
@@ -194,17 +193,19 @@ app.MapPost("/login", async context =>
         ctx.Response.StatusCode = 401;
         await ctx.Response.WriteAsync(empty);
     }
+    conn.Close();
 });
 
-string GenerateJwt(int userId)
+string GenerateJwt(int userId, SqliteConnection conn)
 {
+    var role = IsAdmin(userId, conn);
     const int expiry = 60 * 24 * 1;
     var claims = new List<Claim>
     {
-        // Add another claim, role
         new(JwtRegisteredClaimNames.Sub, userId.ToString()),
         new(JwtRegisteredClaimNames.Iss, issuer),
-        new(JwtRegisteredClaimNames.Aud, audience)
+        new(JwtRegisteredClaimNames.Aud, audience),
+        new("role", role)
     };
     
     var token = new JwtSecurityToken(
@@ -310,6 +311,20 @@ bool IsValid(LoginInfo loginInfo, int userId, string userPass, byte[] userSalt)
 {
     var (hashedPass, _) = SecurePassword(password: loginInfo.password!, salt: userSalt);
     return loginInfo.username == userId && hashedPass == userPass;
+}
+
+string IsAdmin(int id, SqliteConnection conn)
+{
+    var isAllowed = 0;
+    const string sqlSelectUser = "SELECT isAllowed FROM users WHERE username=@username;";
+    var cmdSelectPerson = new SqliteCommand(sqlSelectUser, conn);
+    cmdSelectPerson.Parameters.AddWithValue("@username", id);
+    var sqliteDataReaderUser = cmdSelectPerson.ExecuteReader();
+    while (sqliteDataReaderUser.Read())
+    {
+        isAllowed = int.Parse(sqliteDataReaderUser.GetValue(0).ToString()!);
+    }
+    return isAllowed != 1 ? "User" : "Admin";
 }
 
 bool DoesExist(int targetedId, SqliteConnection conn)
