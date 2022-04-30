@@ -30,7 +30,7 @@ const string audience = "RollCallApi";
 
 WebSocket webSocket = null;
 
-ConcurrentDictionary<string, WebSocket> clients = new ConcurrentDictionary<string, WebSocket>();
+var clients = new ConcurrentDictionary<string, WebSocket>();
 
 // The context gives us the info about the request pipeline's context
 app.Use(async (context, next) =>
@@ -48,7 +48,7 @@ app.Use(async (context, next) =>
             {
                 webSocket = await context.WebSockets.AcceptWebSocketAsync();
                 
-                var connId = AddClient(webSocket);
+                AddClient(webSocket);
                 
                 await ReceiveMessage(webSocket, async (result, buffer) =>
                 {
@@ -60,8 +60,8 @@ app.Use(async (context, next) =>
                         case WebSocketMessageType.Close:
                             var id = GetAllClients().FirstOrDefault(s => s.Value == webSocket).Key;
                             WebSocket sock;
-                            GetAllClients().TryRemove(id, out sock);
-                            await sock.CloseAsync(result.CloseStatus.Value, result.CloseStatusDescription, CancellationToken.None);
+                            GetAllClients().TryRemove(id, out sock!);
+                            await sock.CloseAsync(result.CloseStatus!.Value, result.CloseStatusDescription, CancellationToken.None);
                             return;
                     }
                 });
@@ -78,18 +78,6 @@ app.Use(async (context, next) =>
     }
 });
 
-// async Task SendConId(WebSocket socket, string connId)
-// {
-//     var buffer = Encoding.UTF8.GetBytes("ConnId: " + connId);
-//     await socket.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
-// }
-//
-// async Task SendAction(WebSocket socket, string action)
-// {
-//     var buffer = Encoding.UTF8.GetBytes("Action: " + action);
-//     await socket.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
-// }
-
 async Task ReceiveMessage(WebSocket socket, Action<WebSocketReceiveResult, byte[]> handleMessage)
 {
     var buffer = new byte[1024 * 4];
@@ -102,30 +90,33 @@ async Task ReceiveMessage(WebSocket socket, Action<WebSocketReceiveResult, byte[
     }
 }
 
+async Task SendMessage(WebSocket socket) {
+    var buffer = Encoding.UTF8.GetBytes("Refresh");
+    foreach (var client in GetAllClients())
+    {
+        if (socket.State == WebSocketState.Open && client.Value.State == WebSocketState.Open)
+        {
+            await client.Value.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
+        }
+    }
+}
+
 ConcurrentDictionary<string, WebSocket> GetAllClients()
 {
     return clients;
 }
 
-string AddClient(WebSocket socket)
+void AddClient(WebSocket socket)
 {
     string connId = Guid.NewGuid().ToString(); // Generate a unique identifier
     clients.TryAdd(connId, socket);
     Console.WriteLine("Connection added: " + connId);
-    return connId;
 }
-
-// app.Use((context, next) =>
-// {
-//     context.Response.Headers.Add("Access-Control-Allow-Origin", "*");
-//     context.Response.Headers.Add("Access-Control-Allow-Methods", "*");
-//     context.Response.Headers.Add("Access-Control-Allow-Headers", "*");
-//     return next();
-// });
 
 InitializeUser(100, "4321");
 InitializeUser(101, "1234");
 InitializeUser(92, "0987");
+InitializeUser(168, "7890");
 
 bool ValidateToken([Optional] HttpRequest request, [Optional] string userToken)
 {
@@ -291,26 +282,6 @@ byte[] GenerateSaltUsingRanNumGen(int saltSize)
     return random;
 }
 
-string GenerateSaltUsingRandom(int saltSize)
-{
-    const string alphanumeric = "abcdefghijklmnopqrstuvwxyz0123456789";
-    const string specialCharacters = "!@#$%^&*~";
-    
-    var ran = new Random();
-    var random = "";
-    for (var i = 0; i <= saltSize-3; i++)
-    {
-        var fSalt = ran.Next(alphanumeric.Length);
-        random += alphanumeric.ElementAt(fSalt);
-    }
-    for (var j = 0; j < 2; j++)
-    {
-        var sSalt = ran.Next(specialCharacters.Length);
-        random += specialCharacters.ElementAt(sSalt);
-    }
-    return random;
-}
-
 bool IsValid(LoginInfo loginInfo, int userId, string userPass, byte[] userSalt)
 {
     var (hashedPass, _) = SecurePassword(password: loginInfo.password!, salt: userSalt);
@@ -364,7 +335,7 @@ app.MapGet("/persons", () =>
     return personsList;
 });
 
-app.MapPost("/persons", (Person person, HttpRequest request) =>
+app.MapPost("/persons", async (Person person, HttpRequest request) =>
 {
     if (!ValidateToken(request: request))
     {
@@ -387,6 +358,10 @@ app.MapPost("/persons", (Person person, HttpRequest request) =>
     cmdInsertPerson.Prepare();
     cmdInsertPerson.ExecuteNonQuery();
     conn.Close();
+    
+    if (webSocket != null)
+        await SendMessage(webSocket);
+    
     return Results.Created($"/Persons/{person.Id}", person);
 });
 
@@ -438,20 +413,14 @@ app.MapPut("/persons/{id}", async (int id, Person person, HttpRequest request) =
     cmdUpdatePerson.Prepare();
     cmdUpdatePerson.ExecuteNonQuery();
     conn.Close();
-    
-    var buffer = Encoding.UTF8.GetBytes("Refresh");
-    foreach (var client in GetAllClients())
-    {
-        if (webSocket!.State == WebSocketState.Open)
-        {
-            await client.Value.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
-        }
-    }
+
+    if (webSocket != null)
+        await SendMessage(webSocket);
 
     return Results.Ok(person);
 });
 
-app.MapDelete("/persons/{id}", (int id, HttpRequest request) =>
+app.MapDelete("/persons/{id}", async (int id, HttpRequest request) =>
 {
     using var conn = new SqliteConnection(cs);
     conn.Open();
@@ -472,6 +441,9 @@ app.MapDelete("/persons/{id}", (int id, HttpRequest request) =>
     cmdDeletePerson.Prepare();
     cmdDeletePerson.ExecuteNonQuery();
     conn.Close();
+    
+    if (webSocket != null)
+        await SendMessage(webSocket);
     
     return Results.NoContent();
 });
