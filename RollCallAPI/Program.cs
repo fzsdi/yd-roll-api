@@ -58,7 +58,10 @@ app.Use(async (context, next) =>
                             Console.WriteLine($"Message received: {Encoding.UTF8.GetString(buffer, 0, result.Count)}");
                             return;
                         case WebSocketMessageType.Close:
-                            Console.WriteLine("Received closed message.");
+                            var id = GetAllClients().FirstOrDefault(s => s.Value == webSocket).Key;
+                            WebSocket sock;
+                            GetAllClients().TryRemove(id, out sock);
+                            await sock.CloseAsync(result.CloseStatus.Value, result.CloseStatusDescription, CancellationToken.None);
                             return;
                     }
                 });
@@ -122,6 +125,7 @@ string AddClient(WebSocket socket)
 
 InitializeUser(100, "4321");
 InitializeUser(101, "1234");
+InitializeUser(92, "0987");
 
 bool ValidateToken([Optional] HttpRequest request, [Optional] string userToken)
 {
@@ -223,7 +227,7 @@ void InitializeUser(int username, string password)
     using var conn = new SqliteConnection(cs);
     conn.Open();
     var (hashedPass, salt) = SecurePassword(password: password);
-    const int isAllowed = 1;
+    const int isAllowed = 0;
     const int firstLogin = 0;
 
     const string sqlSelectUser = "SELECT username FROM users WHERE username=@username";
@@ -443,6 +447,7 @@ app.MapPut("/persons/{id}", async (int id, Person person, HttpRequest request) =
             await client.Value.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None);
         }
     }
+
     return Results.Ok(person);
 });
 
