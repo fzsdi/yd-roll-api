@@ -59,9 +59,9 @@ app.Use(async (context, next) =>
                             return;
                         case WebSocketMessageType.Close:
                             var id = GetAllClients().FirstOrDefault(s => s.Value == webSocket).Key;
-                            WebSocket sock;
-                            GetAllClients().TryRemove(id, out sock!);
-                            await sock.CloseAsync(result.CloseStatus!.Value, result.CloseStatusDescription, CancellationToken.None);
+                            if (id == null) return;
+                            GetAllClients().TryRemove(id, out var sock);
+                            await sock!.CloseAsync(result.CloseStatus!.Value, result.CloseStatusDescription, CancellationToken.None);
                             return;
                     }
                 });
@@ -113,11 +113,6 @@ void AddClient(WebSocket socket)
     Console.WriteLine("Connection added: " + connId);
 }
 
-InitializeUser(100, "4321");
-InitializeUser(101, "1234");
-InitializeUser(92, "0987");
-InitializeUser(168, "7890");
-
 bool ValidateToken([Optional] HttpRequest request, [Optional] string userToken)
 {
     string jwtToken = request != null ? request.Headers["Authorization"] : userToken;
@@ -141,6 +136,24 @@ bool ValidateToken([Optional] HttpRequest request, [Optional] string userToken)
     }
 
     return true;
+}
+
+bool IsAuthorized(HttpRequest request, int personId)
+{
+    string jwtToken = request.Headers["Authorization"];
+    var handler = new JwtSecurityTokenHandler();
+    var jwtSecurityToken = handler.ReadJwtToken(jwtToken);
+    var role = jwtSecurityToken.Claims.First(claim => claim.Type == "role").Value;
+    var sub = jwtSecurityToken.Claims.First(claim => claim.Type == "sub").Value;
+    switch (role)
+    {
+        case "Admin":
+            return true;
+        case "User":
+            return int.Parse(sub) == personId;
+        default:
+            return false;
+    }
 }
 
 app.MapPost("/login", async context =>
@@ -341,7 +354,7 @@ app.MapPost("/persons", async (Person person, HttpRequest request) =>
     {
         return Results.Unauthorized();
     }
-    using var conn = new SqliteConnection(cs);
+    await using var conn = new SqliteConnection(cs);
     conn.Open();
     if (DoesExist(person.Id, conn))
     {
@@ -355,6 +368,8 @@ app.MapPost("/persons", async (Person person, HttpRequest request) =>
     cmdInsertPerson.Parameters.AddWithValue("@isPresent", isPresent);
     cmdInsertPerson.Parameters.AddWithValue("@positionId", 0);
     
+    InitializeUser(person.Id, "7890");
+ 
     cmdInsertPerson.Prepare();
     cmdInsertPerson.ExecuteNonQuery();
     conn.Close();
@@ -398,6 +413,10 @@ app.MapPut("/persons/{id}", async (int id, Person person, HttpRequest request) =
     if (!ValidateToken(request: request))
     {
         return Results.Unauthorized();
+    }
+    if (!IsAuthorized(request, person.Id))
+    {
+        return Results.StatusCode(405);
     }
     if (!DoesExist(id, conn))
     {
