@@ -10,7 +10,9 @@ using Microsoft.AspNetCore.Cryptography.KeyDerivation;
 using Microsoft.Data.Sqlite;
 using Microsoft.IdentityModel.Tokens;
 
-const string cs = "Data Source=C:\\Practice\\RollCall\\RollCallAPI\\identifier.sqlite";
+var connectionStringBuilder = new SqliteConnectionStringBuilder();
+connectionStringBuilder.DataSource = "./identifier.sqlite";
+var cs = connectionStringBuilder.ConnectionString;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddCors();
@@ -32,7 +34,6 @@ WebSocket webSocket = null;
 
 var clients = new ConcurrentDictionary<string, WebSocket>();
 
-// The context gives us the info about the request pipeline's context
 app.Use(async (context, next) =>
 {
     if (context.Request.Path == "/channel")
@@ -108,7 +109,7 @@ ConcurrentDictionary<string, WebSocket> GetAllClients()
 
 void AddClient(WebSocket socket)
 {
-    string connId = Guid.NewGuid().ToString(); // Generate a unique identifier
+    string connId = Guid.NewGuid().ToString();
     clients.TryAdd(connId, socket);
     Console.WriteLine("Connection added: " + connId);
 }
@@ -201,7 +202,6 @@ app.MapPost("/login", async context =>
         ctx.Response.StatusCode = 401;
         await ctx.Response.WriteAsync(empty);
     }
-    conn.Close();
 });
 
 string GenerateJwt(int userId, SqliteConnection conn)
@@ -260,7 +260,6 @@ void InitializeUser(int username, string password)
     
     cmdInsertUser.Prepare();
     cmdInsertUser.ExecuteNonQuery();
-    conn.Close();
 }
 
 Tuple<string, byte[]> SecurePassword(string password, [Optional] byte[]? salt)
@@ -272,10 +271,8 @@ Tuple<string, byte[]> SecurePassword(string password, [Optional] byte[]? salt)
     }
     else
     {
-        // Generate salt with csprng, RNGCryptoServiceProvider() is obsolete therefore I used RandomNumberGenerator.Create method
         var saltSize = password.Length;
-        // var ranSalt = GenerateSaltUsingRandom(saltSize);
-        ranNumGenSalt = GenerateSaltUsingRanNumGen(saltSize); // Either this or that
+        ranNumGenSalt = GenerateSaltUsingRanNumGen(saltSize);
     }
     var hashed = Convert.ToBase64String(KeyDerivation.Pbkdf2(
         password,
@@ -344,7 +341,6 @@ app.MapGet("/persons", () =>
         var isPresent = sqliteDataReaderPersons.GetValue(2).ToString() == "1";
         personsList.Add(new Person(id, fullName!, isPresent));
     }
-    conn.Close();
     return personsList;
 });
 
@@ -354,25 +350,27 @@ app.MapPost("/persons", async (Person person, HttpRequest request) =>
     {
         return Results.Unauthorized();
     }
-    await using var conn = new SqliteConnection(cs);
-    conn.Open();
-    if (DoesExist(person.Id, conn))
+
+    await using (var conn = new SqliteConnection(cs))
     {
-        return Results.Conflict();
-    }
-    var isPresent = person.IsPresent ? 1 : 0;
-    const string sqlInsertPerson = "INSERT INTO persons (personId, fullName, isPresent, positionId) VALUES (@personId, @fullName, @isPresent, @positionId)";
-    var cmdInsertPerson = new SqliteCommand(sqlInsertPerson, conn);
-    cmdInsertPerson.Parameters.AddWithValue("@personId", person.Id);
-    cmdInsertPerson.Parameters.AddWithValue("@fullName", person.FullName);
-    cmdInsertPerson.Parameters.AddWithValue("@isPresent", isPresent);
-    cmdInsertPerson.Parameters.AddWithValue("@positionId", 0);
+        conn.Open();
+        if (DoesExist(person.Id, conn))
+        {
+            return Results.Conflict();
+        }
+        var isPresent = person.IsPresent ? 1 : 0;
+        const string sqlInsertPerson = "INSERT INTO persons (personId, fullName, isPresent, positionId) VALUES (@personId, @fullName, @isPresent, @positionId)";
+        var cmdInsertPerson = new SqliteCommand(sqlInsertPerson, conn);
+        cmdInsertPerson.Parameters.AddWithValue("@personId", person.Id);
+        cmdInsertPerson.Parameters.AddWithValue("@fullName", person.FullName);
+        cmdInsertPerson.Parameters.AddWithValue("@isPresent", isPresent);
+        cmdInsertPerson.Parameters.AddWithValue("@positionId", 0);
     
-    InitializeUser(person.Id, "7890");
+        InitializeUser(person.Id, "7890");
  
-    cmdInsertPerson.Prepare();
-    cmdInsertPerson.ExecuteNonQuery();
-    conn.Close();
+        cmdInsertPerson.Prepare();
+        cmdInsertPerson.ExecuteNonQuery();
+    }
     
     if (webSocket != null)
         await SendMessage(webSocket);
@@ -408,30 +406,31 @@ app.MapGet("/persons/{id}", (int id) =>
 
 app.MapPut("/persons/{id}", async (int id, Person person, HttpRequest request) =>
 {
-    await using var conn = new SqliteConnection(cs);
-    conn.Open();
     if (!ValidateToken(request: request))
     {
         return Results.Unauthorized();
     }
-    if (!IsAuthorized(request, person.Id))
+    await using (var conn = new SqliteConnection(cs))
     {
-        return Results.StatusCode(405);
-    }
-    if (!DoesExist(id, conn))
-    {
-        return Results.NotFound();
-    }
-    var isPresent = person.IsPresent ? 1 : 0;
-    const string sqlUpdatePerson =
-        "UPDATE persons SET isPresent=@isPresent WHERE personId=@personId and deletedAt is null";
-    var cmdUpdatePerson = new SqliteCommand(sqlUpdatePerson, conn);
-    cmdUpdatePerson.Parameters.AddWithValue("@isPresent", isPresent);
-    cmdUpdatePerson.Parameters.AddWithValue("@personId", id);
+        conn.Open();
+        if (!IsAuthorized(request, person.Id))
+        {
+            return Results.StatusCode(405);
+        }
+        if (!DoesExist(id, conn))
+        {
+            return Results.NotFound();
+        }
+        var isPresent = person.IsPresent ? 1 : 0;
+        const string sqlUpdatePerson =
+            "UPDATE persons SET isPresent=@isPresent WHERE personId=@personId and deletedAt is null";
+        var cmdUpdatePerson = new SqliteCommand(sqlUpdatePerson, conn);
+        cmdUpdatePerson.Parameters.AddWithValue("@isPresent", isPresent);
+        cmdUpdatePerson.Parameters.AddWithValue("@personId", id);
     
-    cmdUpdatePerson.Prepare();
-    cmdUpdatePerson.ExecuteNonQuery();
-    conn.Close();
+        cmdUpdatePerson.Prepare();
+        cmdUpdatePerson.ExecuteNonQuery();
+    }
 
     if (webSocket != null)
         await SendMessage(webSocket);
@@ -441,25 +440,26 @@ app.MapPut("/persons/{id}", async (int id, Person person, HttpRequest request) =
 
 app.MapDelete("/persons/{id}", async (int id, HttpRequest request) =>
 {
-    using var conn = new SqliteConnection(cs);
-    conn.Open();
     if (!ValidateToken(request: request))
     {
         return Results.Unauthorized();
     }
-    if (!DoesExist(id, conn))
+    await using (var conn = new SqliteConnection(cs))
     {
-        return Results.NotFound();
-    }
-    var currentTime = DateTime.Now;
-    const string sqlDeletePerson = "UPDATE persons SET deletedAt=@deletedAt WHERE personId=@personId and deletedAt is null";
-    var cmdDeletePerson = new SqliteCommand(sqlDeletePerson, conn);
-    cmdDeletePerson.Parameters.AddWithValue("@personId", id);
-    cmdDeletePerson.Parameters.AddWithValue("@deletedAt", currentTime);
+        conn.Open();
+        if (!DoesExist(id, conn))
+        {
+            return Results.NotFound();
+        }
+        var currentTime = DateTime.Now;
+        const string sqlDeletePerson = "UPDATE persons SET deletedAt=@deletedAt WHERE personId=@personId and deletedAt is null";
+        var cmdDeletePerson = new SqliteCommand(sqlDeletePerson, conn);
+        cmdDeletePerson.Parameters.AddWithValue("@personId", id);
+        cmdDeletePerson.Parameters.AddWithValue("@deletedAt", currentTime);
     
-    cmdDeletePerson.Prepare();
-    cmdDeletePerson.ExecuteNonQuery();
-    conn.Close();
+        cmdDeletePerson.Prepare();
+        cmdDeletePerson.ExecuteNonQuery();
+    }
     
     if (webSocket != null)
         await SendMessage(webSocket);
